@@ -1,0 +1,10 @@
+{
+  "folders": [
+    "IRS Statutes",
+    "IRS Regulations",
+    "DOL Statutes",
+    "DOL Regulations"
+  ],
+  "loginUrl": "https://app.erisapedia.com/login",
+  "googleSheetWebAppUrl": "https://script.google.com/macros/s/AKfycbzgvT5GK6bBlZn1BdPyv3IksX1G-p-UpopuJm6v0j2WN9NcVsOJOsAjhRVLw0Z41qUung/exec"
+}

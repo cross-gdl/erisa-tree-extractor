@@ -2,8 +2,9 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_FOLDERS = ['IRS Statutes', 'IRS Regulations', 'DOL Statutes', 'DOL Regulations'];
-const TARGET_URL = 'https://app.erisapedia.com/login';
+const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+const DEFAULT_FOLDERS = config.folders;
+const TARGET_URL = config.loginUrl;
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -30,11 +31,13 @@ function parseArgs() {
 async function waitForLogin(page) {
   console.log('Checking login state...');
 
-  const treeExists = await page.$('#tree');
-  if (treeExists) {
-    console.log('Already logged in. Tree found.');
-    return;
-  }
+  try {
+    const treeExists = await page.$('#tree');
+    if (treeExists) {
+      console.log('Already logged in. Tree found.');
+      return;
+    }
+  } catch {}
 
   console.log('');
   console.log('==> Please log in to erisapedia.com in the browser window.');
@@ -43,10 +46,14 @@ async function waitForLogin(page) {
 
   while (true) {
     await new Promise(r => setTimeout(r, 3000));
-    const found = await page.$('#tree');
-    if (found) {
-      console.log('Login detected. Tree found.');
-      return;
+    try {
+      const found = await page.$('#tree');
+      if (found) {
+        console.log('Login detected. Tree found.');
+        return;
+      }
+    } catch {
+      // Page is navigating (login redirect) — keep waiting
     }
   }
 }
@@ -140,6 +147,45 @@ async function extractCSV(page, folders) {
   return csvText;
 }
 
+async function pushToGoogleSheet(csvText) {
+  console.log('Pushing CSV to Google Sheet...');
+  try {
+    // Google Apps Script redirects POST -> GET. Follow manually to get JSON.
+    const res = await fetch(config.googleSheetWebAppUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/csv' },
+      body: csvText,
+      redirect: 'manual',
+    });
+
+    let finalRes = res;
+    if (res.status >= 300 && res.status < 400) {
+      const redirectUrl = res.headers.get('location');
+      if (redirectUrl) {
+        finalRes = await fetch(redirectUrl, { redirect: 'follow' });
+      }
+    }
+
+    const text = await finalRes.text();
+    try {
+      const data = JSON.parse(text);
+      if (data.success) {
+        console.log(`Google Sheet updated (${data.rows} rows).`);
+      } else {
+        console.error('Google Sheet error:', data.error);
+      }
+    } catch {
+      if (finalRes.ok) {
+        console.log('Google Sheet updated (response was not JSON, but request succeeded).');
+      } else {
+        console.error('Google Sheet error: unexpected response.');
+      }
+    }
+  } catch (err) {
+    console.error('Failed to push to Google Sheet:', err.message);
+  }
+}
+
 async function main() {
   const opts = parseArgs();
 
@@ -148,10 +194,14 @@ async function main() {
     headless: false,
     userDataDir: path.join(__dirname, 'chrome-data'),
     defaultViewport: null,
-    args: ['--window-size=1280,900'],
+    args: ['--window-size=1280,900', '--no-restore-session-state'],
   });
 
-  const page = (await browser.pages())[0] || await browser.newPage();
+  const pages = await browser.pages();
+  const page = pages[0] || await browser.newPage();
+  for (const p of pages.slice(1)) {
+    await p.close();
+  }
 
   try {
     await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -161,10 +211,18 @@ async function main() {
 
   await waitForLogin(page);
 
-  await page.waitForFunction(
-    () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
-    { timeout: 30000 }
-  );
+  // Wait for jQuery and tree to be fully ready, retrying through navigations
+  while (true) {
+    try {
+      await page.waitForFunction(
+        () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
+        { timeout: 30000 }
+      );
+      break;
+    } catch {
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
   await new Promise(r => setTimeout(r, 2000));
 
   await expandFolders(page, opts.folders);
@@ -175,6 +233,10 @@ async function main() {
 
   const rowCount = csv.split('\n').length - 1;
   console.log(`Wrote ${rowCount} rows to ${outputPath}`);
+
+  if (config.googleSheetWebAppUrl) {
+    await pushToGoogleSheet(csv);
+  }
 
   if (opts.keepOpen) {
     console.log('Browser left open (--keep-open). Press Ctrl+C to exit.');
