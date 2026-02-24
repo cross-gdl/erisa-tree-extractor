@@ -2,8 +2,9 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_FOLDERS = ['IRS Statutes', 'IRS Regulations', 'DOL Statutes', 'DOL Regulations'];
-const TARGET_URL = 'https://app.erisapedia.com/login';
+const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+const DEFAULT_FOLDERS = config.folders;
+const TARGET_URL = config.loginUrl;
 
 function parseArgs() {
   const args = process.argv.slice(2);

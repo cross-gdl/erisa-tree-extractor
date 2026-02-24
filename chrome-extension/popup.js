@@ -1,3 +1,19 @@
+fetch(chrome.runtime.getURL('config.json'))
+  .then(r => r.json())
+  .then(config => {
+    const container = document.getElementById('folderList');
+    config.folders.forEach(folder => {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = folder;
+      cb.checked = true;
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + folder));
+      container.appendChild(label);
+    });
+  });
+
 function getSelectedFolders() {
   return Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
     .map(cb => cb.value);
