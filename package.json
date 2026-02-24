@@ -1,0 +1,12 @@
+{
+  "name": "erisa-tree-extractor",
+  "version": "1.0.0",
+  "description": "Extracts Fancytree folder structures from erisapedia.com and exports as CSV",
+  "main": "extract.js",
+  "scripts": {
+    "start": "node extract.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.0.0"
+  }
+}
