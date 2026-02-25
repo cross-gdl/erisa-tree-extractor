@@ -2,6 +2,7 @@
 node_modules/
 chrome-data/
 .puppeteer-cache/
+cookies.json
 *.csv
 *.md
 !README.md

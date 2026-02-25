@@ -4,12 +4,12 @@ Extracts ERISA regulatory tree structures (IRS/DOL statutes and regulations) fro
 
 ## Setup (Mac, one-time)
 
-### Step 1: Install Node.js
+### Step 1: Prerequisites
 
-1. Go to [https://nodejs.org](https://nodejs.org/)
-2. Click the big green button to download the installer (choose the LTS version)
-3. Open the downloaded file and follow the prompts to install
-4. When it's done, you can close the installer
+You need two things installed (you probably already have Chrome):
+
+- **Google Chrome** — download from [google.com/chrome](https://www.google.com/chrome/) if you don't have it
+- **Node.js** — go to [nodejs.org](https://nodejs.org/), click the big green button to download the LTS installer, open it and follow the prompts
 
 ### Step 2: Download the extractor
 

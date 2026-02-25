@@ -1,10 +1,12 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const DEFAULT_FOLDERS = config.folders;
 const TARGET_URL = config.loginUrl;
+const COOKIES_PATH = path.join(__dirname, 'cookies.json');
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -26,6 +28,48 @@ function parseArgs() {
   }
 
   return opts;
+}
+
+async function saveCookies(page) {
+  const client = await page.createCDPSession();
+  const { cookies } = await client.send('Network.getAllCookies');
+  await client.detach();
+  fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2), 'utf-8');
+  return cookies.length;
+}
+
+async function restoreCookies(page) {
+  let cookies;
+  try {
+    cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+  } catch {
+    return 0;
+  }
+  if (!cookies || cookies.length === 0) return 0;
+
+  const client = await page.createCDPSession();
+  await client.send('Network.setCookies', { cookies });
+  await client.detach();
+  return cookies.length;
+}
+
+function killOrphanChromeProcesses() {
+  try {
+    const output = execSync(
+      'pgrep -f "Google Chrome.*--remote-debugging" 2>/dev/null || true',
+      { encoding: 'utf-8' }
+    ).trim();
+    if (!output) return;
+    const pids = output.split('\n').filter(Boolean);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), 'SIGTERM');
+      } catch {}
+    }
+    if (pids.length > 0) {
+      console.log(`Killed ${pids.length} orphan Chrome process(es) from previous runs.`);
+    }
+  } catch {}
 }
 
 async function waitForLogin(page) {
@@ -189,18 +233,34 @@ async function pushToGoogleSheet(csvText) {
 async function main() {
   const opts = parseArgs();
 
+  killOrphanChromeProcesses();
+
   console.log('Launching browser...');
   const browser = await puppeteer.launch({
     headless: false,
-    userDataDir: path.join(__dirname, 'chrome-data'),
+    channel: 'chrome',
     defaultViewport: null,
-    args: ['--window-size=1280,900', '--no-restore-session-state'],
+    args: [
+      '--window-size=1280,900',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-extensions',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+    ],
   });
 
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
   for (const p of pages.slice(1)) {
     await p.close();
+  }
+
+  const restoredCount = await restoreCookies(page);
+  if (restoredCount > 0) {
+    console.log(`Restored ${restoredCount} saved cookies from previous session.`);
   }
 
   try {
@@ -210,6 +270,9 @@ async function main() {
   }
 
   await waitForLogin(page);
+
+  const savedCount = await saveCookies(page);
+  console.log(`Saved ${savedCount} cookies for next session.`);
 
   // Wait for jQuery and tree to be fully ready, retrying through navigations
   while (true) {
