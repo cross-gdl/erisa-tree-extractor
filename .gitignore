@@ -1,10 +1,8 @@
 .DS_Store
 node_modules/
-chrome-data/
-.puppeteer-cache/
 cookies.json
+config.json
 *.csv
-*.md
-!README.md
+IRS Statutes.md
 *.app/
 launch.sh

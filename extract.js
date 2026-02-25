@@ -1,7 +1,6 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const DEFAULT_FOLDERS = config.folders;
@@ -53,26 +52,11 @@ async function restoreCookies(page) {
   return cookies.length;
 }
 
-function killOrphanChromeProcesses() {
-  try {
-    const output = execSync(
-      'pgrep -f "Google Chrome.*--remote-debugging" 2>/dev/null || true',
-      { encoding: 'utf-8' }
-    ).trim();
-    if (!output) return;
-    const pids = output.split('\n').filter(Boolean);
-    for (const pid of pids) {
-      try {
-        process.kill(Number(pid), 'SIGTERM');
-      } catch {}
-    }
-    if (pids.length > 0) {
-      console.log(`Killed ${pids.length} orphan Chrome process(es) from previous runs.`);
-    }
-  } catch {}
-}
+async function waitForLogin(page, browser) {
+  const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+  const POLL_INTERVAL_MS = 3000;
+  const startTime = Date.now();
 
-async function waitForLogin(page) {
   console.log('Checking login state...');
 
   try {
@@ -89,15 +73,24 @@ async function waitForLogin(page) {
   console.log('');
 
   while (true) {
-    await new Promise(r => setTimeout(r, 3000));
+    if (!browser.connected) {
+      throw new Error('Browser was closed during login wait.');
+    }
+    if (Date.now() - startTime > LOGIN_TIMEOUT_MS) {
+      throw new Error('Login timed out after 10 minutes.');
+    }
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
     try {
       const found = await page.$('#tree');
       if (found) {
         console.log('Login detected. Tree found.');
         return;
       }
-    } catch {
-      // Page is navigating (login redirect) — keep waiting
+    } catch (err) {
+      if (!browser.connected) {
+        throw new Error('Browser was closed during login wait.');
+      }
     }
   }
 }
@@ -164,12 +157,34 @@ async function extractCSV(page, folders) {
       return s;
     }
 
-    const rows = [['Level 1', 'Level 2', 'Level 3']];
+    let maxDepth = 0;
+    function measureDepth(node, depth) {
+      const d = depth + 1;
+      if (!node.children || node.children.length === 0) {
+        if (d > maxDepth) maxDepth = d;
+      } else {
+        node.children.forEach(child => measureDepth(child, d));
+      }
+    }
+
+    tree.visit(node => {
+      if (targets.includes(node.title.trim())) {
+        measureDepth(node, 0);
+      }
+    });
+
+    if (maxDepth === 0) maxDepth = 1;
+    const header = Array.from({ length: maxDepth }, (_, i) => `Level ${i + 1}`);
+    const rows = [header];
 
     function walk(node, ancestors) {
       const nodePath = ancestors.concat(node.title);
       if (!node.children || node.children.length === 0) {
-        rows.push([nodePath[0] || '', nodePath[1] || '', nodePath[2] || '']);
+        const row = [];
+        for (let i = 0; i < maxDepth; i++) {
+          row.push(nodePath[i] || '');
+        }
+        rows.push(row);
       } else {
         node.children.forEach(child => walk(child, nodePath));
       }
@@ -232,11 +247,10 @@ async function pushToGoogleSheet(csvText) {
 
 async function main() {
   const opts = parseArgs();
-
-  killOrphanChromeProcesses();
+  let browser;
 
   console.log('Launching browser...');
-  const browser = await puppeteer.launch({
+  browser = await puppeteer.launch({
     headless: false,
     channel: 'chrome',
     defaultViewport: null,
@@ -252,60 +266,81 @@ async function main() {
     ],
   });
 
-  const pages = await browser.pages();
-  const page = pages[0] || await browser.newPage();
-  for (const p of pages.slice(1)) {
-    await p.close();
-  }
-
-  const restoredCount = await restoreCookies(page);
-  if (restoredCount > 0) {
-    console.log(`Restored ${restoredCount} saved cookies from previous session.`);
-  }
+  browser.on('disconnected', () => {
+    console.log('Browser disconnected.');
+  });
 
   try {
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-  } catch {
-    console.log('Page load timed out — continuing anyway (login page may still be loading).');
-  }
-
-  await waitForLogin(page);
-
-  const savedCount = await saveCookies(page);
-  console.log(`Saved ${savedCount} cookies for next session.`);
-
-  // Wait for jQuery and tree to be fully ready, retrying through navigations
-  while (true) {
-    try {
-      await page.waitForFunction(
-        () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
-        { timeout: 30000 }
-      );
-      break;
-    } catch {
-      await new Promise(r => setTimeout(r, 2000));
+    const pages = await browser.pages();
+    const page = pages[0] || await browser.newPage();
+    for (const p of pages.slice(1)) {
+      await p.close();
     }
-  }
-  await new Promise(r => setTimeout(r, 2000));
 
-  await expandFolders(page, opts.folders);
-  const csv = await extractCSV(page, opts.folders);
+    const restoredCount = await restoreCookies(page);
+    if (restoredCount > 0) {
+      console.log(`Restored ${restoredCount} saved cookies from previous session.`);
+    }
 
-  const outputPath = path.resolve(opts.output);
-  fs.writeFileSync(outputPath, csv, 'utf-8');
+    try {
+      await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+    } catch {
+      console.log('Page load timed out — continuing anyway (login page may still be loading).');
+    }
 
-  const rowCount = csv.split('\n').length - 1;
-  console.log(`Wrote ${rowCount} rows to ${outputPath}`);
+    await waitForLogin(page, browser);
 
-  if (config.googleSheetWebAppUrl) {
-    await pushToGoogleSheet(csv);
-  }
+    const savedCount = await saveCookies(page);
+    console.log(`Saved ${savedCount} cookies for next session.`);
 
-  if (opts.keepOpen) {
-    console.log('Browser left open (--keep-open). Press Ctrl+C to exit.');
-  } else {
-    await browser.close();
-    console.log('Done.');
+    const MAX_JQUERY_RETRIES = 10;
+    for (let attempt = 1; attempt <= MAX_JQUERY_RETRIES; attempt++) {
+      if (!browser.connected) {
+        throw new Error('Browser was closed while waiting for jQuery.');
+      }
+      try {
+        await page.waitForFunction(
+          () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
+          { timeout: 30000 }
+        );
+        break;
+      } catch {
+        if (!browser.connected) {
+          throw new Error('Browser was closed while waiting for jQuery.');
+        }
+        if (attempt === MAX_JQUERY_RETRIES) {
+          throw new Error(`jQuery/#tree not available after ${MAX_JQUERY_RETRIES} retries.`);
+        }
+        console.log(`jQuery not ready yet (attempt ${attempt}/${MAX_JQUERY_RETRIES}), retrying...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
+
+    await expandFolders(page, opts.folders);
+    const csv = await extractCSV(page, opts.folders);
+
+    const outputPath = path.resolve(opts.output);
+    fs.writeFileSync(outputPath, csv, 'utf-8');
+
+    const rowCount = csv.split('\n').length - 1;
+    console.log(`Wrote ${rowCount} rows to ${outputPath}`);
+
+    if (config.googleSheetWebAppUrl) {
+      await pushToGoogleSheet(csv);
+    }
+
+    if (opts.keepOpen) {
+      console.log('Browser left open (--keep-open). Press Ctrl+C to exit.');
+    } else {
+      await browser.close();
+      browser = null;
+      console.log('Done.');
+    }
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
   }
 }
 
