@@ -111,15 +111,36 @@ document.getElementById('extractBtn').addEventListener('click', async () => {
         return s;
       }
 
-      const rows = [['Level 1', 'Level 2', 'Level 3']];
+      let maxDepth = 0;
+      function measureDepth(node, depth) {
+        const d = depth + 1;
+        if (!node.children || node.children.length === 0) {
+          if (d > maxDepth) maxDepth = d;
+        } else {
+          node.children.forEach(child => measureDepth(child, d));
+        }
+      }
+
+      tree.visit(function(node) {
+        if (targets.includes(node.title.trim())) {
+          measureDepth(node, 0);
+        }
+      });
+
+      if (maxDepth === 0) maxDepth = 1;
+      const header = Array.from({ length: maxDepth }, (_, i) => `Level ${i + 1}`);
+      const rows = [header];
 
       function walk(node, ancestors) {
-        const path = ancestors.concat(node.title);
+        const nodePath = ancestors.concat(node.title);
         if (!node.children || node.children.length === 0) {
-          const row = [path[0] || '', path[1] || '', path[2] || ''];
+          const row = [];
+          for (let i = 0; i < maxDepth; i++) {
+            row.push(nodePath[i] || '');
+          }
           rows.push(row);
         } else {
-          node.children.forEach(child => walk(child, path));
+          node.children.forEach(child => walk(child, nodePath));
         }
       }
 

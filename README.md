@@ -2,14 +2,35 @@
 
 Extracts ERISA regulatory tree structures (IRS/DOL statutes and regulations) from [ERISApedia](https://app.erisapedia.com) into CSV format, with optional Google Sheets export.
 
-## Quick Start (Mac)
+## Setup (Mac, one-time)
 
-**Prerequisites:** [Node.js](https://nodejs.org/) must be installed.
+### Step 1: Prerequisites
 
-1. Clone this repo
+You need two things installed (you probably already have Chrome):
+
+- **Google Chrome** — download from [google.com/chrome](https://www.google.com/chrome/) if you don't have it
+- **Node.js** — go to [nodejs.org](https://nodejs.org/), click the big green button to download the LTS installer, open it and follow the prompts
+
+### Step 2: Download the extractor
+
+1. Go to [this project's GitHub page](https://github.com/cross-gdl/erisa-tree-extractor)
+2. Click the green **Code** button, then click **Download ZIP**
+3. Open the downloaded ZIP — macOS will unzip it into your Downloads folder
+4. Move the `erisa-tree-extractor` folder somewhere convenient (e.g., your Desktop)
+
+### Step 3: First run
+
+1. Open the `erisa-tree-extractor` folder
 2. Double-click **`ERISA Extractor.command`**
+3. If macOS says the file can't be opened: right-click it, choose **Open**, then click **Open** again in the popup
+4. A Terminal window will appear — on first run it will install dependencies (this takes a minute or two)
+5. A Chrome window will open to the ERISApedia login page — log in as usual
+6. Once logged in, the script expands all folders and extracts the data automatically
+7. When it says "Done", press any key to close the Terminal window
 
-On first run, dependencies and a bundled Chrome browser are installed automatically. A Chrome window opens for you to log in to ERISApedia — subsequent runs use the saved session.
+### Running it again
+
+Just double-click **`ERISA Extractor.command`**. Your login session is saved, so you won't need to log in again unless the session expires.
 
 The extracted CSV is saved locally and optionally pushed to a Google Sheet.
 

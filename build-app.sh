@@ -15,10 +15,7 @@ APP_PATH="$SCRIPT_DIR/$APP_NAME.app"
 
 echo "Installing dependencies..."
 cd "$SCRIPT_DIR"
-npm install --silent
-
-echo "Installing Chrome for Puppeteer..."
-npx puppeteer browsers install chrome
+npm install --silent --ignore-scripts
 
 echo "Building $APP_NAME.app..."
 
@@ -29,12 +26,14 @@ cat > "$SCRIPT_DIR/launch.sh" <<LAUNCHER
 #!/bin/bash
 cd "$SCRIPT_DIR"
 
-# Ensure Puppeteer's Chrome is installed
-CHROME_CHECK=\$("$NODE_PATH" -e "try{require('fs').accessSync(require('puppeteer').executablePath());console.log('ok')}catch{console.log('missing')}" 2>/dev/null)
-if [ "\$CHROME_CHECK" != "ok" ]; then
-    echo "Installing Chrome for Puppeteer (first-time setup)..."
-    npx puppeteer browsers install chrome
+if [ ! -d "node_modules" ]; then
+    echo "First-time setup: installing dependencies..."
+    npm install --ignore-scripts
+    echo ""
 fi
+
+echo "Starting ERISA Extractor..."
+echo ""
 
 "$NODE_PATH" extract.js
 EXIT_CODE=\$?
@@ -44,7 +43,8 @@ else
     osascript -e 'display notification "Extraction failed. Check the terminal for details." with title "ERISA Extractor" sound name "Basso"'
 fi
 echo ""
-echo "You can close this window."
+echo "Done. Press any key to close this window."
+read -n 1 -s
 LAUNCHER
 chmod +x "$SCRIPT_DIR/launch.sh"
 

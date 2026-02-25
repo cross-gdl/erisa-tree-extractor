@@ -5,6 +5,7 @@ const path = require('path');
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
 const DEFAULT_FOLDERS = config.folders;
 const TARGET_URL = config.loginUrl;
+const COOKIES_PATH = path.join(__dirname, 'cookies.json');
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -28,7 +29,34 @@ function parseArgs() {
   return opts;
 }
 
-async function waitForLogin(page) {
+async function saveCookies(page) {
+  const client = await page.createCDPSession();
+  const { cookies } = await client.send('Network.getAllCookies');
+  await client.detach();
+  fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2), 'utf-8');
+  return cookies.length;
+}
+
+async function restoreCookies(page) {
+  let cookies;
+  try {
+    cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf-8'));
+  } catch {
+    return 0;
+  }
+  if (!cookies || cookies.length === 0) return 0;
+
+  const client = await page.createCDPSession();
+  await client.send('Network.setCookies', { cookies });
+  await client.detach();
+  return cookies.length;
+}
+
+async function waitForLogin(page, browser) {
+  const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+  const POLL_INTERVAL_MS = 3000;
+  const startTime = Date.now();
+
   console.log('Checking login state...');
 
   try {
@@ -45,15 +73,24 @@ async function waitForLogin(page) {
   console.log('');
 
   while (true) {
-    await new Promise(r => setTimeout(r, 3000));
+    if (!browser.connected) {
+      throw new Error('Browser was closed during login wait.');
+    }
+    if (Date.now() - startTime > LOGIN_TIMEOUT_MS) {
+      throw new Error('Login timed out after 10 minutes.');
+    }
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
     try {
       const found = await page.$('#tree');
       if (found) {
         console.log('Login detected. Tree found.');
         return;
       }
-    } catch {
-      // Page is navigating (login redirect) — keep waiting
+    } catch (err) {
+      if (!browser.connected) {
+        throw new Error('Browser was closed during login wait.');
+      }
     }
   }
 }
@@ -120,12 +157,90 @@ async function extractCSV(page, folders) {
       return s;
     }
 
-    const rows = [['Level 1', 'Level 2', 'Level 3']];
+    // ERISA § → 29 USC § conversion offsets by Title I part range
+    const ERISA_TO_USC = [
+      [2, 4, 999],       // Title I, Subtitle A → 29 USC 1001-1003
+      [101, 199, 920],   // Part 1 (Reporting & Disclosure) → 1021+
+      [201, 299, 850],   // Part 2 (Participation & Vesting) → 1051+
+      [301, 399, 780],   // Part 3 (Funding) → 1081+
+      [401, 499, 700],   // Part 4 (Fiduciary) → 1101+
+      [501, 599, 630],   // Part 5 (Administration) → 1131+
+      [601, 699, 560],   // Part 6 (COBRA) → 1161+
+      [701, 799, 480],   // Part 7 (Health) → 1181+
+      [3001, 3099, -1800], // Title III → 1201+
+    ];
+
+    // Part 8 uses letter suffixes (§1193, §1193a, §1193b, §1193c)
+    const ERISA_PART8 = { '801': '1193', '802': '1193a', '803': '1193b', '804': '1193c' };
+
+    function buildSourceUrl(source, id) {
+      if (!source || !id) return '';
+
+      if (source === 'IRSStatutes') {
+        return 'https://www.law.cornell.edu/uscode/text/26/' + id;
+      }
+      if (source === 'IRSRegs') {
+        return 'https://www.law.cornell.edu/cfr/text/26/' + id;
+      }
+      if (source === 'DOLRegs') {
+        return 'https://www.law.cornell.edu/cfr/text/29/' + id;
+      }
+      if (source === 'DOLStatutes') {
+        if (ERISA_PART8[id]) {
+          return 'https://www.law.cornell.edu/uscode/text/29/' + ERISA_PART8[id];
+        }
+
+        const match = id.match(/^(\d+)([a-zA-Z]*)$/);
+        if (!match) return '';
+
+        const num = parseInt(match[1]);
+        const suffix = match[2] || '';
+
+        for (const [min, max, offset] of ERISA_TO_USC) {
+          if (num >= min && num <= max) {
+            return 'https://www.law.cornell.edu/uscode/text/29/' + (num + offset) + suffix;
+          }
+        }
+
+        // Outside known ERISA ranges (e.g. 1001a, 1143a) — already a USC number
+        return 'https://www.law.cornell.edu/uscode/text/29/' + id;
+      }
+
+      return '';
+    }
+
+    let maxDepth = 0;
+    function measureDepth(node, depth) {
+      const d = depth + 1;
+      if (!node.children || node.children.length === 0) {
+        if (d > maxDepth) maxDepth = d;
+      } else {
+        node.children.forEach(child => measureDepth(child, d));
+      }
+    }
+
+    tree.visit(node => {
+      if (targets.includes(node.title.trim())) {
+        measureDepth(node, 0);
+      }
+    });
+
+    if (maxDepth === 0) maxDepth = 1;
+    const header = Array.from({ length: maxDepth }, (_, i) => `Level ${i + 1}`);
+    header.push('Source URL');
+    const rows = [header];
 
     function walk(node, ancestors) {
       const nodePath = ancestors.concat(node.title);
       if (!node.children || node.children.length === 0) {
-        rows.push([nodePath[0] || '', nodePath[1] || '', nodePath[2] || '']);
+        const row = [];
+        for (let i = 0; i < maxDepth; i++) {
+          row.push(nodePath[i] || '');
+        }
+        const source = node.data ? node.data.Source : '';
+        const id = node.data ? node.data.ID : '';
+        row.push(buildSourceUrl(source, id));
+        rows.push(row);
       } else {
         node.children.forEach(child => walk(child, nodePath));
       }
@@ -188,61 +303,100 @@ async function pushToGoogleSheet(csvText) {
 
 async function main() {
   const opts = parseArgs();
+  let browser;
 
   console.log('Launching browser...');
-  const browser = await puppeteer.launch({
+  browser = await puppeteer.launch({
     headless: false,
-    userDataDir: path.join(__dirname, 'chrome-data'),
+    channel: 'chrome',
     defaultViewport: null,
-    args: ['--window-size=1280,900', '--no-restore-session-state'],
+    args: [
+      '--window-size=1280,900',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-extensions',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+    ],
   });
 
-  const pages = await browser.pages();
-  const page = pages[0] || await browser.newPage();
-  for (const p of pages.slice(1)) {
-    await p.close();
-  }
+  browser.on('disconnected', () => {
+    console.log('Browser disconnected.');
+  });
 
   try {
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-  } catch {
-    console.log('Page load timed out — continuing anyway (login page may still be loading).');
-  }
-
-  await waitForLogin(page);
-
-  // Wait for jQuery and tree to be fully ready, retrying through navigations
-  while (true) {
-    try {
-      await page.waitForFunction(
-        () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
-        { timeout: 30000 }
-      );
-      break;
-    } catch {
-      await new Promise(r => setTimeout(r, 2000));
+    const pages = await browser.pages();
+    const page = pages[0] || await browser.newPage();
+    for (const p of pages.slice(1)) {
+      await p.close();
     }
-  }
-  await new Promise(r => setTimeout(r, 2000));
 
-  await expandFolders(page, opts.folders);
-  const csv = await extractCSV(page, opts.folders);
+    const restoredCount = await restoreCookies(page);
+    if (restoredCount > 0) {
+      console.log(`Restored ${restoredCount} saved cookies from previous session.`);
+    }
 
-  const outputPath = path.resolve(opts.output);
-  fs.writeFileSync(outputPath, csv, 'utf-8');
+    try {
+      await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+    } catch {
+      console.log('Page load timed out — continuing anyway (login page may still be loading).');
+    }
 
-  const rowCount = csv.split('\n').length - 1;
-  console.log(`Wrote ${rowCount} rows to ${outputPath}`);
+    await waitForLogin(page, browser);
 
-  if (config.googleSheetWebAppUrl) {
-    await pushToGoogleSheet(csv);
-  }
+    const savedCount = await saveCookies(page);
+    console.log(`Saved ${savedCount} cookies for next session.`);
 
-  if (opts.keepOpen) {
-    console.log('Browser left open (--keep-open). Press Ctrl+C to exit.');
-  } else {
-    await browser.close();
-    console.log('Done.');
+    const MAX_JQUERY_RETRIES = 10;
+    for (let attempt = 1; attempt <= MAX_JQUERY_RETRIES; attempt++) {
+      if (!browser.connected) {
+        throw new Error('Browser was closed while waiting for jQuery.');
+      }
+      try {
+        await page.waitForFunction(
+          () => typeof jQuery !== 'undefined' && jQuery('#tree').length > 0,
+          { timeout: 30000 }
+        );
+        break;
+      } catch {
+        if (!browser.connected) {
+          throw new Error('Browser was closed while waiting for jQuery.');
+        }
+        if (attempt === MAX_JQUERY_RETRIES) {
+          throw new Error(`jQuery/#tree not available after ${MAX_JQUERY_RETRIES} retries.`);
+        }
+        console.log(`jQuery not ready yet (attempt ${attempt}/${MAX_JQUERY_RETRIES}), retrying...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
+
+    await expandFolders(page, opts.folders);
+    const csv = await extractCSV(page, opts.folders);
+
+    const outputPath = path.resolve(opts.output);
+    fs.writeFileSync(outputPath, csv, 'utf-8');
+
+    const rowCount = csv.split('\n').length - 1;
+    console.log(`Wrote ${rowCount} rows to ${outputPath}`);
+
+    if (config.googleSheetWebAppUrl) {
+      await pushToGoogleSheet(csv);
+    }
+
+    if (opts.keepOpen) {
+      console.log('Browser left open (--keep-open). Press Ctrl+C to exit.');
+    } else {
+      await browser.close();
+      browser = null;
+      console.log('Done.');
+    }
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
   }
 }
 

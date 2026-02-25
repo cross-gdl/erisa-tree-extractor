@@ -19,17 +19,10 @@ fi
 # Install npm dependencies if needed
 if [ ! -d "node_modules" ]; then
     echo "First-time setup: installing dependencies..."
-    npm install
+    npm install --ignore-scripts
     echo ""
 fi
 
-# Install Puppeteer's Chrome if needed
-CHROME_CHECK=$("$NODE_PATH" -e "try{require('fs').accessSync(require('puppeteer').executablePath());console.log('ok')}catch{console.log('missing')}" 2>/dev/null)
-if [ "$CHROME_CHECK" != "ok" ]; then
-    echo "First-time setup: downloading Chrome..."
-    npx puppeteer browsers install chrome
-    echo ""
-fi
 
 echo "Starting ERISA Extractor..."
 echo ""
