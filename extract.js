@@ -157,6 +157,58 @@ async function extractCSV(page, folders) {
       return s;
     }
 
+    // ERISA § → 29 USC § conversion offsets by Title I part range
+    const ERISA_TO_USC = [
+      [2, 4, 999],       // Title I, Subtitle A → 29 USC 1001-1003
+      [101, 199, 920],   // Part 1 (Reporting & Disclosure) → 1021+
+      [201, 299, 850],   // Part 2 (Participation & Vesting) → 1051+
+      [301, 399, 780],   // Part 3 (Funding) → 1081+
+      [401, 499, 700],   // Part 4 (Fiduciary) → 1101+
+      [501, 599, 630],   // Part 5 (Administration) → 1131+
+      [601, 699, 560],   // Part 6 (COBRA) → 1161+
+      [701, 799, 480],   // Part 7 (Health) → 1181+
+      [3001, 3099, -1800], // Title III → 1201+
+    ];
+
+    // Part 8 uses letter suffixes (§1193, §1193a, §1193b, §1193c)
+    const ERISA_PART8 = { '801': '1193', '802': '1193a', '803': '1193b', '804': '1193c' };
+
+    function buildSourceUrl(source, id) {
+      if (!source || !id) return '';
+
+      if (source === 'IRSStatutes') {
+        return 'https://www.law.cornell.edu/uscode/text/26/' + id;
+      }
+      if (source === 'IRSRegs') {
+        return 'https://www.law.cornell.edu/cfr/text/26/' + id;
+      }
+      if (source === 'DOLRegs') {
+        return 'https://www.law.cornell.edu/cfr/text/29/' + id;
+      }
+      if (source === 'DOLStatutes') {
+        if (ERISA_PART8[id]) {
+          return 'https://www.law.cornell.edu/uscode/text/29/' + ERISA_PART8[id];
+        }
+
+        const match = id.match(/^(\d+)([a-zA-Z]*)$/);
+        if (!match) return '';
+
+        const num = parseInt(match[1]);
+        const suffix = match[2] || '';
+
+        for (const [min, max, offset] of ERISA_TO_USC) {
+          if (num >= min && num <= max) {
+            return 'https://www.law.cornell.edu/uscode/text/29/' + (num + offset) + suffix;
+          }
+        }
+
+        // Outside known ERISA ranges (e.g. 1001a, 1143a) — already a USC number
+        return 'https://www.law.cornell.edu/uscode/text/29/' + id;
+      }
+
+      return '';
+    }
+
     let maxDepth = 0;
     function measureDepth(node, depth) {
       const d = depth + 1;
@@ -175,6 +227,7 @@ async function extractCSV(page, folders) {
 
     if (maxDepth === 0) maxDepth = 1;
     const header = Array.from({ length: maxDepth }, (_, i) => `Level ${i + 1}`);
+    header.push('Source URL');
     const rows = [header];
 
     function walk(node, ancestors) {
@@ -184,6 +237,9 @@ async function extractCSV(page, folders) {
         for (let i = 0; i < maxDepth; i++) {
           row.push(nodePath[i] || '');
         }
+        const source = node.data ? node.data.Source : '';
+        const id = node.data ? node.data.ID : '';
+        row.push(buildSourceUrl(source, id));
         rows.push(row);
       } else {
         node.children.forEach(child => walk(child, nodePath));
